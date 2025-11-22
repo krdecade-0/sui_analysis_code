@@ -1,0 +1,128 @@
+https://docs.sui.io/guides/developer/advanced/custom-indexer/build#step-11-run-your-indexer
+
+psql -U postgres -c "DROP DATABASE IF EXISTS sui_indexer;"
+psql -U postgres -c "CREATE DATABASE sui_indexer;"
+
+$env:DATABASE_URL = "postgres://postgres:56904628@localhost:5432/sui_indexer"
+
+diesel setup --database-url $env:DATABASE_URL
+
+diesel migration generate checkpoints
+diesel migration generate transactions
+diesel migration generate object_changes
+
+diesel migration run --database-url $env:DATABASE_URL
+
+diesel print-schema --database-url $env:DATABASE_URL > src/schema.rs
+
+cargo run -- --remote-store-url https://checkpoints.mainnet.sui.io
+
+psql -U postgres sui_indexer
+
+
+
+SQL commands
+
+Show first 5 transactions (clean fields only):
+SELECT transaction_digest, kind, status, checkpoint_sequence
+FROM transactions
+LIMIT 5;
+
+Show transaction with the most object changes:
+SELECT transaction_digest, COUNT(*) AS changes
+FROM object_changes
+GROUP BY transaction_digest
+ORDER BY changes DESC
+LIMIT 5;
+
+Show first checkpoints:
+SELECT sequence_number, digest, timestamp, epoch_id, user_tx_count, system_tx_count
+FROM checkpoints
+ORDER BY sequence_number
+LIMIT 10;
+
+Find failed transactions:
+SELECT transaction_digest, status, error
+FROM transactions
+WHERE status = 'failure'
+LIMIT 10;
+
+Count failures:
+SELECT COUNT(*) AS failed_txs
+FROM transactions
+WHERE status = 'failure';
+
+Count average inputs per type:
+SELECT
+    AVG(inputs_imm_or_owned) AS avg_owned,
+    AVG(inputs_pure) AS avg_pure,
+    AVG(inputs_receiving) AS avg_receiving,
+    AVG(inputs_shared_mut) AS avg_shared_mut,
+    AVG(inputs_shared_ro) AS avg_shared_ro,
+    AVG(inputs_funds_withdrawal) AS avg_funds_withdrawal
+FROM transactions;
+
+Look for transactions with mixed input types:
+SELECT transaction_digest
+FROM transactions
+WHERE inputs_shared_mut > 0
+  AND inputs_pure > 0
+LIMIT 10;
+
+Find which commands appear most:
+WITH cmd AS (
+    SELECT 'move_call'          AS command, SUM(command_move_call)          AS count FROM transactions
+    UNION ALL
+    SELECT 'transfer_objects'   AS command, SUM(command_transfer_objects)   FROM transactions
+    UNION ALL
+    SELECT 'split_coins'        AS command, SUM(command_split_coins)        FROM transactions
+    UNION ALL
+    SELECT 'merge_coins'        AS command, SUM(command_merge_coins)        FROM transactions
+    UNION ALL
+    SELECT 'publish'            AS command, SUM(command_publish)            FROM transactions
+    UNION ALL
+    SELECT 'make_move_vec'      AS command, SUM(command_make_move_vec)      FROM transactions
+    UNION ALL
+    SELECT 'upgrade'            AS command, SUM(command_upgrade)            FROM transactions
+)
+SELECT command, count
+FROM cmd
+ORDER BY count DESC
+LIMIT 10;
+
+Top Sui transfers:
+SELECT transaction_digest, sui_transferred
+FROM transactions
+ORDER BY sui_transferred DESC
+LIMIT 10;
+
+Total SUI transferred in entire database:
+SELECT transaction_digest, sui_transferred
+FROM transactions
+ORDER BY sui_transferred DESC
+LIMIT 10;
+
+Check total SUI transferred per checkpoint:
+SELECT sequence_number, total_sui_transferred
+FROM checkpoints
+ORDER BY sequence_number
+LIMIT 20;
+
+Find checkpoints with highest SUI movement:
+SELECT sequence_number, total_sui_transferred
+FROM checkpoints
+ORDER BY total_sui_transferred DESC
+LIMIT 10;
+
+Find checkpoints with highest SUI movement:
+SELECT change_type, COUNT(*) AS count
+FROM object_changes
+GROUP BY change_type
+ORDER BY count DESC;
+
+Show created vs deleted objects:
+SELECT
+    SUM(CASE WHEN id_created THEN 1 ELSE 0 END) AS created,
+    SUM(CASE WHEN id_deleted THEN 1 ELSE 0 END) AS deleted
+FROM object_changes;
+
