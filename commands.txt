@@ -9,11 +9,12 @@ diesel setup --database-url $env:DATABASE_URL
 
 diesel migration generate checkpoints
 diesel migration generate transactions
-diesel migration generate object_changes
 
 diesel migration run --database-url $env:DATABASE_URL
 
 diesel print-schema --database-url $env:DATABASE_URL > src/schema.rs
+
+cargo clean
 
 cargo run -- --remote-store-url https://checkpoints.mainnet.sui.io
 
@@ -40,6 +41,17 @@ SELECT sequence_number, digest, timestamp, epoch_id, user_tx_count, system_tx_co
 FROM checkpoints
 ORDER BY sequence_number
 LIMIT 10;
+
+Count user and system transactions:
+SELECT sequence_number, system_tx_count, user_tx_count
+FROM checkpoints
+ORDER BY system_tx_count;
+
+Aggregate total transactions over all checkpoints:
+SELECT 
+    SUM(system_tx_count) AS total_system,
+    SUM(user_tx_count) AS total_user
+FROM checkpoints;
 
 Find failed transactions:
 SELECT transaction_digest, status, error
@@ -126,3 +138,14 @@ SELECT
     SUM(CASE WHEN id_deleted THEN 1 ELSE 0 END) AS deleted
 FROM object_changes;
 
+Transactions with the highest gas used:
+SELECT transaction_digest, gas_used
+FROM transactions
+ORDER BY gas_used DESC
+LIMIT 10;
+
+Transactions with the highest gas price:
+SELECT transaction_digest, gas_price
+FROM transactions
+ORDER BY gas_price DESC
+LIMIT 10;
