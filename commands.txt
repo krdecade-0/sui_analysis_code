@@ -9,6 +9,7 @@ diesel setup --database-url $env:DATABASE_URL
 
 diesel migration generate checkpoints
 diesel migration generate transactions
+diesel migration generate object_changes
 
 diesel migration run --database-url $env:DATABASE_URL
 
