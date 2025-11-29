@@ -47,10 +47,9 @@ pub struct StoredTransaction {
 #[derive(Insertable, Queryable, Debug, Clone, FieldCount)]
 #[diesel(table_name = object_changes)]
 pub struct StoredObjectChange {
-    pub id: i64,   // PK
+    pub address: String,   // PK
     pub transaction_digest: String, // FK to StoredTransaction
     pub change_type: String,
-    pub address: String,
-    pub id_created: bool,
-    pub id_deleted: bool,
+    pub input_digest: String,
+    pub output_digest: String,
 }

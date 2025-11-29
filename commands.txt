@@ -11,6 +11,7 @@ diesel migration generate checkpoints
 diesel migration generate transactions
 diesel migration generate object_changes
 
+diesel database reset
 diesel migration run --database-url $env:DATABASE_URL
 
 diesel print-schema --database-url $env:DATABASE_URL > src/schema.rs
@@ -18,6 +19,7 @@ diesel print-schema --database-url $env:DATABASE_URL > src/schema.rs
 cargo clean
 
 cargo run -- --remote-store-url https://checkpoints.mainnet.sui.io
+cargo run -- --remote-store-url https://checkpoints.mainnet.sui.io --from-checkpoint 400000 --to-checkpoint 420000
 
 psql -U postgres sui_indexer
 
@@ -29,6 +31,17 @@ Show first 5 transactions (clean fields only):
 SELECT transaction_digest, kind, status, checkpoint_sequence
 FROM transactions
 LIMIT 5;
+
+SELECT 
+    t.transaction_digest, 
+    t.kind, 
+    t.gas_used, 
+    oc.change_type,
+    oc.address
+FROM transactions t
+LEFT JOIN object_changes oc
+    ON t.transaction_digest = oc.transaction_digest
+WHERE t.transaction_digest = 'vNek1LRe2u552VMmbPWhkx4ULnAkDp6E4DiF6cfGu4B';
 
 Show transaction with the most object changes:
 SELECT transaction_digest, COUNT(*) AS changes

@@ -8,11 +8,26 @@ use clap::Parser;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations};
 use handlers::CheckpointHandler; // updated to use combined handler
 use sui_indexer_alt_framework::{
-    cluster::{Args, IndexerCluster},
+    cluster::{Args as ClusterArgs, IndexerCluster},
     pipeline::sequential::SequentialConfig,
 };
+use sui_indexer_alt_framework::ingestion::ClientArgs;
+use sui_indexer_alt_framework::IndexerArgs;
+
 use tokio;
 use url::Url;
+
+#[derive(Parser)]
+struct MyArgs {
+    #[arg(long)]
+    remote_store_url: String,
+
+    #[arg(long, default_value = "0")]
+    from_checkpoint: u64,
+
+    #[arg(long, default_value = "0")]
+    to_checkpoint: u64,
+}
 
 // Embed database migrations into the binary so they run automatically on startup
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
@@ -29,13 +44,35 @@ async fn main() -> Result<()> {
         .expect("Invalid database URL");
 
     // Parse command-line arguments (checkpoint range, URLs, performance settings)
-    let args = Args::parse();
+    let args = MyArgs::parse();
     let start_checkpoint = args.from_checkpoint;
     let end_checkpoint = args.to_checkpoint;
 
+    let handler = CheckpointHandler {
+        start_checkpoint,
+        end_checkpoint,
+    };
+
+    // Map your custom args to the framework's Args struct
+    let framework_args = ClusterArgs {
+        indexer_args: IndexerArgs {
+            first_checkpoint: Some(start_checkpoint),
+            last_checkpoint: Some(end_checkpoint),
+            ..Default::default()
+        },
+        client_args: Some(ClientArgs {
+            remote_store_url: Some(args.remote_store_url.parse::<Url>()?),
+            local_ingestion_path: None,
+            rpc_api_url: None,
+            rpc_username: None,
+            rpc_password: None,
+        }),
+        ..Default::default()
+    };
+
     // Build and configure the indexer cluster
     let mut cluster = IndexerCluster::builder()
-        .with_args(args)                    // Apply command-line configuration
+        .with_args(framework_args)                    // Apply command-line configuration
         .with_database_url(database_url)    // Set up database URL
         .with_migrations(&MIGRATIONS)       // Enable automatic schema migrations
         .build()
@@ -44,7 +81,7 @@ async fn main() -> Result<()> {
     // Register our custom sequential pipeline with the cluster
     // using the new CheckpointHandler that handles all three tables
     cluster.sequential_pipeline(
-        CheckpointHandler,                 // Combined handler
+        handler,                           // Combined handler
         SequentialConfig::default(),       // Default batch sizes and checkpoint lag
     ).await?;
 
