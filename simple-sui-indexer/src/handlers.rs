@@ -14,10 +14,10 @@ use sui_types::effects::{TransactionEffects, TransactionEffectsAPI, IDOperation}
 use sui_types::transaction::{TransactionKind, TransactionDataAPI, Command, CallArg, ObjectArg, SharedObjectMutability};
 use sui_types::execution_status::ExecutionStatus;
 
-use crate::models::{StoredCheckpoint, StoredTransaction, StoredObjectChange};
+use crate::models::{StoredCheckpoint, StoredTransaction, ObjectChange};
 use crate::schema::transactions::dsl::{transactions, transaction_digest};
 use crate::schema::checkpoints::dsl::{checkpoints, sequence_number};
-use crate::schema::object_changes::dsl::{object_changes, address};
+use crate::schema::object_changes::dsl::object_changes;
 
 
 /// Handler for inserting checkpoints + transactions + object changes
@@ -30,7 +30,7 @@ pub struct CheckpointHandler {
 #[async_trait::async_trait]
 impl Processor for CheckpointHandler {
     const NAME: &'static str = "checkpoint_handler";
-    type Value = (Vec<StoredCheckpoint>, Vec<StoredTransaction>, Vec<StoredObjectChange>);
+    type Value = (Vec<StoredCheckpoint>, Vec<StoredTransaction>, Vec<ObjectChange>);
 
     async fn process(
         &self,
@@ -257,11 +257,13 @@ impl Processor for CheckpointHandler {
                             "unknown".to_string()
                         };
 
-                        let stored = StoredObjectChange {
+                        let stored = ObjectChange {
                             address: change.id.to_string(),
                             transaction_digest: tx_digest.clone(),
                             change_type,
+                            input_version: change.input_version.map(|seq| seq.value() as i64).unwrap_or_default(),
                             input_digest: change.input_digest.map(|d| d.to_string()).unwrap_or_default(),
+                            output_version: change.output_version.map(|seq| seq.value() as i64).unwrap_or_default(),
                             output_digest: change.output_digest.map(|d| d.to_string()).unwrap_or_default(),
                         };
                         object_changes_vec.push(stored);
@@ -285,11 +287,13 @@ impl Processor for CheckpointHandler {
                             "unknown".to_string()
                         };
 
-                        let stored = StoredObjectChange {
+                        let stored = ObjectChange {
                             address: change.id.to_string(),
                             transaction_digest: tx_digest.clone(),
                             change_type,
+                            input_version: change.input_version.map(|seq| seq.value() as i64).unwrap_or_default(),
                             input_digest: change.input_digest.map(|d| d.to_string()).unwrap_or_default(),
+                            output_version: change.output_version.map(|seq| seq.value() as i64).unwrap_or_default(),
                             output_digest: change.output_digest.map(|d| d.to_string()).unwrap_or_default(),
                         };
                         object_changes_vec.push(stored);
@@ -305,7 +309,7 @@ impl Processor for CheckpointHandler {
 #[async_trait::async_trait]
 impl sui_indexer_alt_framework::pipeline::sequential::Handler for CheckpointHandler {
     type Store = Db;
-    type Batch = Vec<(Vec<StoredCheckpoint>, Vec<StoredTransaction>, Vec<StoredObjectChange>)>;
+    type Batch = Vec<(Vec<StoredCheckpoint>, Vec<StoredTransaction>, Vec<ObjectChange>)>;
 
     fn batch(batch: &mut Self::Batch, values: Vec<Self::Value>) {
         batch.extend(values);
@@ -339,10 +343,10 @@ impl sui_indexer_alt_framework::pipeline::sequential::Handler for CheckpointHand
             }
 
             if !obj_batch.is_empty() {
+                // No conflict resolution needed - object_id is auto-generated (SERIAL)
+                // Each insert will get a unique ID automatically
                 let inserted = diesel::insert_into(object_changes)
                     .values(obj_batch)
-                    .on_conflict(address)
-                    .do_nothing()
                     .execute(conn)
                     .await?;
                 total_inserted += inserted;

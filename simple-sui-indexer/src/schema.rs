@@ -12,11 +12,14 @@ diesel::table! {
 }
 
 diesel::table! {
-    object_changes (address) {
+    object_changes (object_id) {
+        object_id -> Int4,
         address -> Text,
         transaction_digest -> Text,
         change_type -> Text,
+        input_version -> Int8,
         input_digest -> Text,
+        output_version -> Int8,
         output_digest -> Text,
     }
 }
