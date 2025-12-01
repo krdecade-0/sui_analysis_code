@@ -37,25 +37,31 @@ impl Processor for CheckpointHandler {
         checkpoint: &Arc<CheckpointData>,
     ) -> Result<Vec<Self::Value>> {
 
-        // Skip checkpoints before start
-        if checkpoint.checkpoint_summary.sequence_number < self.start_checkpoint {
-            println!(
-                "[SKIP] CP {} < start_checkpoint {}",
-                checkpoint.checkpoint_summary.sequence_number,
-                self.start_checkpoint
-            );
+        let sample_rate = 35; // Sample every ~35th checkpoint, assuming 345k checkpoints per day and 10k desired samples
+
+        if checkpoint.checkpoint_summary.sequence_number % sample_rate != 0 {
             return Ok(vec![]);
-        }
+        } 
+
+        // Skip checkpoints before start
+        //if checkpoint.checkpoint_summary.sequence_number < self.start_checkpoint {
+          //  println!(
+            //    "[SKIP] CP {} < start_checkpoint {}",
+              //  checkpoint.checkpoint_summary.sequence_number,
+               // self.start_checkpoint
+            //);
+            //return Ok(vec![]);
+        //}
 
         // Skip checkpoints after end
-        if self.end_checkpoint > 0 && checkpoint.checkpoint_summary.sequence_number > self.end_checkpoint {
-            println!(
-                "[STOP] CP {} exceeded end_checkpoint {}",
-                checkpoint.checkpoint_summary.sequence_number,
-                self.end_checkpoint
-            );
-            std::process::exit(0);
-        }
+        //if self.end_checkpoint > 0 && checkpoint.checkpoint_summary.sequence_number > self.end_checkpoint {
+          //  println!(
+            //    "[STOP] CP {} exceeded end_checkpoint {}",
+              //  checkpoint.checkpoint_summary.sequence_number,
+              //  self.end_checkpoint
+            //);
+            //std::process::exit(0);
+        //}
 
         // Extract checkpoint metadata
         let seq_number = checkpoint.checkpoint_summary.sequence_number as i64;

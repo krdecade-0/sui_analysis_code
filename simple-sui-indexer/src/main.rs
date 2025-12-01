@@ -25,7 +25,7 @@ struct MyArgs {
     #[arg(long, default_value = "0")]
     from_checkpoint: u64,
 
-    #[arg(long, default_value = "0")]
+    #[arg(long, default_value_t = u64::MAX)]
     to_checkpoint: u64,
 }
 
