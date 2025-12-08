@@ -1,11 +1,11 @@
 -- Your SQL goes here
 CREATE TABLE object_changes (
-    object_id SERIAL PRIMARY KEY,
-    address TEXT NOT NULL,
-    transaction_digest TEXT NOT NULL REFERENCES transactions(transaction_digest),
+    object_id BIGSERIAL PRIMARY KEY,
+    address BYTEA NOT NULL,
+    transaction_digest BYTEA NOT NULL REFERENCES transactions(transaction_digest),
     change_type TEXT NOT NULL,
-    input_version BIGINT NOT NULL,
-    input_digest TEXT NOT NULL,
-    output_version BIGINT NOT NULL,
-    output_digest TEXT NOT NULL
+    input_version INTEGER NOT NULL DEFAULT 0,
+    input_digest BYTEA NOT NULL DEFAULT '',
+    output_version INTEGER NOT NULL DEFAULT 0,
+    output_digest BYTEA NOT NULL DEFAULT ''
 );

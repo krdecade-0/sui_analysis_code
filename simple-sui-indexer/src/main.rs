@@ -9,7 +9,7 @@ use diesel_migrations::{embed_migrations, EmbeddedMigrations};
 use handlers::CheckpointHandler; // updated to use combined handler
 use sui_indexer_alt_framework::{
     cluster::{Args as ClusterArgs, IndexerCluster},
-    pipeline::sequential::SequentialConfig,
+    pipeline::concurrent::ConcurrentConfig,
 };
 use sui_indexer_alt_framework::ingestion::ClientArgs;
 use sui_indexer_alt_framework::IndexerArgs;
@@ -80,9 +80,9 @@ async fn main() -> Result<()> {
 
     // Register our custom sequential pipeline with the cluster
     // using the new CheckpointHandler that handles all three tables
-    cluster.sequential_pipeline(
-        handler,                           // Combined handler
-        SequentialConfig::default(),       // Default batch sizes and checkpoint lag
+    cluster.concurrent_pipeline(
+        handler,                            // Combined handler
+        ConcurrentConfig::default(),
     ).await?;
 
     // Start the indexer and wait for completion

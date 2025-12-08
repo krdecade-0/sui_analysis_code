@@ -24,6 +24,19 @@ cargo run -- --remote-store-url https://checkpoints.mainnet.sui.io --from-checkp
 
 psql -U postgres sui_indexer
 
+\dt
+TRUNCATE TABLE watermarks;
+
+~/home/haygen/sui_indexer/simple-sui-indexer
+
+sudo service postgresql start
+export DATABASE_URL=postgres://postgres:56904628@172.26.112.1/sui_indexer
+diesel setup --database-url "$DATABASE_URL"
+diesel database reset --database-url "$DATABASE_URL"
+diesel migration run --database-url "$DATABASE_URL"
+INDEXER_WORKERS=3 cargo run --release -- --remote-store-url https://checkpopoints.mainnet.sui.io
+
+
 
 
 SQL commands

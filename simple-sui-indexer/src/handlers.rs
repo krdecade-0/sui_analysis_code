@@ -4,17 +4,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
 use diesel_async::RunQueryDsl;
-use sui_indexer_alt_framework::{pipeline::Processor, postgres::{Connection, Db}};
+use sui_indexer_alt_framework::{pipeline::Processor, postgres::Db};
+use sui_indexer_alt_framework::pipeline::concurrent::Handler as ConcurrentHandler;
+use sui_indexer_alt_framework::postgres::store::Store;
 use sui_types::full_checkpoint_content::CheckpointData;
 use sui_types::effects::{TransactionEffects, TransactionEffectsAPI, IDOperation};
 use sui_types::transaction::{TransactionKind, TransactionDataAPI, Command, CallArg, ObjectArg, SharedObjectMutability};
 use sui_types::execution_status::ExecutionStatus;
+use chrono::{DateTime, Utc};
 
-use crate::models::{StoredCheckpoint, StoredTransaction, ObjectChange};
+use crate::models::{StoredCheckpoint, StoredTransaction, ObjectChange, TxKind, Status, ChangeType, IndexerBatch};
 use crate::schema::transactions::dsl::{transactions, transaction_digest};
 use crate::schema::checkpoints::dsl::{checkpoints, sequence_number};
 use crate::schema::object_changes::dsl::object_changes;
@@ -30,53 +32,41 @@ pub struct CheckpointHandler {
 #[async_trait::async_trait]
 impl Processor for CheckpointHandler {
     const NAME: &'static str = "checkpoint_handler";
-    type Value = (Vec<StoredCheckpoint>, Vec<StoredTransaction>, Vec<ObjectChange>);
+    type Value = IndexerBatch;
 
     async fn process(
         &self,
         checkpoint: &Arc<CheckpointData>,
     ) -> Result<Vec<Self::Value>> {
 
-        let sample_rate = 35; // Sample every ~35th checkpoint, assuming 345k checkpoints per day and 10k desired samples
-
-        if checkpoint.checkpoint_summary.sequence_number % sample_rate != 0 {
+        // Sample every ~691th checkpoint, assuming 345k checkpoints per day and 100 desired samples per day
+        if checkpoint.checkpoint_summary.sequence_number % 3455 != 0 {
             return Ok(vec![]);
-        } 
+        }
 
         // Skip checkpoints before start
-        //if checkpoint.checkpoint_summary.sequence_number < self.start_checkpoint {
-          //  println!(
-            //    "[SKIP] CP {} < start_checkpoint {}",
-              //  checkpoint.checkpoint_summary.sequence_number,
-               // self.start_checkpoint
-            //);
-            //return Ok(vec![]);
-        //}
+        if checkpoint.checkpoint_summary.sequence_number < self.start_checkpoint {
+            return Ok(vec![]);
+        }
 
         // Skip checkpoints after end
-        //if self.end_checkpoint > 0 && checkpoint.checkpoint_summary.sequence_number > self.end_checkpoint {
-          //  println!(
-            //    "[STOP] CP {} exceeded end_checkpoint {}",
-              //  checkpoint.checkpoint_summary.sequence_number,
-              //  self.end_checkpoint
-            //);
-            //std::process::exit(0);
-        //}
+        if self.end_checkpoint > 0 && checkpoint.checkpoint_summary.sequence_number > self.end_checkpoint {
+            return Ok(vec![]);
+        }
 
         // Extract checkpoint metadata
-        let seq_number = checkpoint.checkpoint_summary.sequence_number as i64;
-        let digest_str = checkpoint.checkpoint_summary.digest().to_string();
-        let timestamp = checkpoint
-            .checkpoint_summary
-            .timestamp()
-            .duration_since(UNIX_EPOCH)
-            .expect("Timestamp is before UNIX_EPOCH")
-            .as_secs() as i64;
-        let epoch_number = checkpoint.checkpoint_summary.epoch as i64;
-        let mut system_tx_count = 0;
-        let mut user_tx_count = 0;
+        let seq_number = checkpoint.checkpoint_summary.sequence_number as i32;
+        let digest_vec = checkpoint.checkpoint_summary.digest().inner().to_vec();
+        let timestamp = DateTime::<Utc>::from(checkpoint.checkpoint_summary.timestamp());
+        let epoch_number = checkpoint.checkpoint_summary.epoch as i32;
+        let mut system_tx_count: i16 = 0;
+        let mut user_tx_count: i16 = 0;
+        let mut tx_count = 0;
 
-        for tx_checkpoint in checkpoint.transactions.iter() {
+        let txs = &checkpoint.transactions;
+
+        for tx_checkpoint in txs.iter() {
+            tx_count += 1;
             let kind = tx_checkpoint.transaction.data().intent_message().value.kind();
 
             if kind.is_system_tx() {
@@ -89,74 +79,78 @@ impl Processor for CheckpointHandler {
         // Create checkpoint record
         let stored_checkpoint = StoredCheckpoint {
             sequence_number: seq_number,
-            digest: digest_str,
+            digest: digest_vec,
             timestamp,
             epoch_id: epoch_number,
             system_tx_count,
             user_tx_count,
         };
 
-        let mut transactions_vec = Vec::new();
-        let mut object_changes_vec = Vec::new();
+        let mut transactions_vec = Vec::with_capacity(tx_count);
+        let obj_total: usize = txs.iter().map(|tx| match &tx.effects {
+            TransactionEffects::V1(e) => e.object_changes().len(),
+            TransactionEffects::V2(e) => e.object_changes().len(),
+        }).sum();
+
+        let mut object_changes_vec = Vec::with_capacity(obj_total);
 
         // Process each transaction in the checkpoint
-        for tx in checkpoint.transactions.iter() {
+        for tx in txs.iter() {
 
             // Determine the kind of the transaction
             let tx_data = &tx.transaction.data().intent_message().value;
 
-            let kind_str = match tx_data.kind() {
-                TransactionKind::ProgrammableTransaction(_) => "ProgrammableTransaction",
-                TransactionKind::Genesis(_) => "GenesisTransaction",
-                TransactionKind::ConsensusCommitPrologue(_) => "ConsensusCommitPrologueTransaction",
-                TransactionKind::ConsensusCommitPrologueV2(_) => "ConsensusCommitPrologueTransactionV2",
-                TransactionKind::ConsensusCommitPrologueV3(_) => "ConsensusCommitPrologueTransactionV3",
-                TransactionKind::ConsensusCommitPrologueV4(_) => "ConsensusCommitPrologueTransactionV4",
-                TransactionKind::ChangeEpoch(_) => "ChangeEpochTransaction",
-                TransactionKind::RandomnessStateUpdate(_) => "RandomnessStateUpdateTransaction",
-                TransactionKind::AuthenticatorStateUpdate(_) => "AuthenticatorStateUpdateTransaction",
-                TransactionKind::EndOfEpochTransaction(_) => "EndOfEpochTransaction",
-                TransactionKind::ProgrammableSystemTransaction(_) => "ProgrammableSystemTransaction",
-            }
-            .to_string();
+            let kind = match tx_data.kind() {
+                TransactionKind::ProgrammableTransaction(_) => TxKind::ProgrammableTransaction,
+                TransactionKind::Genesis(_) => TxKind::GenesisTransaction,
+                TransactionKind::ConsensusCommitPrologue(_) => TxKind::ConsensusCommitPrologueTransaction,
+                TransactionKind::ConsensusCommitPrologueV2(_) => TxKind::ConsensusCommitPrologueTransactionV2,
+                TransactionKind::ConsensusCommitPrologueV3(_) => TxKind::ConsensusCommitPrologueTransactionV3,
+                TransactionKind::ConsensusCommitPrologueV4(_) => TxKind::ConsensusCommitPrologueTransactionV4,
+                TransactionKind::ChangeEpoch(_) => TxKind::ChangeEpochTransaction,
+                TransactionKind::RandomnessStateUpdate(_) => TxKind::RandomnessStateUpdateTransaction,
+                TransactionKind::AuthenticatorStateUpdate(_) => TxKind::AuthenticatorStateUpdateTransaction,
+                TransactionKind::EndOfEpochTransaction(_) => TxKind::EndOfEpochTransaction,
+                TransactionKind::ProgrammableSystemTransaction(_) => TxKind::ProgrammableSystemTransaction,
+            };
 
-            let (status, error) = match tx.effects.status() {
-                ExecutionStatus::Success => ("success".to_string(), None),
-
-                ExecutionStatus::Failure { error, command: _ } => (
-                    "failure".to_string(),
-                    Some(error.to_string())
+            let (status, error_str) = match tx.effects.status() {
+                ExecutionStatus::Success => (Status::Success, None),
+            
+                ExecutionStatus::Failure { error, .. } => (
+                    Status::Failure,
+                    Some(error.to_string()),
                 ),
             };
 
-            let mut inputs_imm_or_owned = 0;
-            let mut inputs_pure = 0;
-            let mut inputs_receiving = 0;
-            let mut inputs_shared_mut = 0;
-            let mut inputs_shared_ro = 0;
-            let mut inputs_funds_withdrawal = 0;
+            let mut inputs_imm_or_owned: i16 = 0;
+            let mut inputs_pure: i16 = 0;
+            let mut inputs_receiving: i16 = 0;
+            let mut inputs_shared_mut: i16 = 0;
+            let mut inputs_shared_ro: i16 = 0;
+            let mut inputs_funds_withdrawal: i16 = 0;
 
-            let mut command_move_call = 0;
-            let mut command_transfer_objects = 0;
-            let mut command_split_coins = 0;
-            let mut command_merge_coins = 0;
-            let mut command_publish = 0;
-            let mut command_make_move_vec = 0;
-            let mut command_upgrade = 0;
+            let mut command_move_call: i16 = 0;
+            let mut command_transfer_objects: i16 = 0;
+            let mut command_split_coins: i16 = 0;
+            let mut command_merge_coins: i16 = 0;
+            let mut command_publish: i16 = 0;
+            let mut command_make_move_vec: i16 = 0;
+            let mut command_upgrade: i16 = 0;
 
             // cannot calculate sui_transferred directly from checkpoint
-            let sui_transferred: i64 = 0;
+            let sui_transferred: i16 = 0;
 
-            let gas_price = tx_data.gas_data().price as i64;
+            let gas_price = tx_data.gas_data().price as i32;
 
-            let gas_used: i64 = match &tx.effects {
+            let gas_used: i32 = match &tx.effects {
                 TransactionEffects::V1(effects_v1) => {
                     let gas = effects_v1.gas_cost_summary();
-                    (gas.computation_cost + gas.storage_cost) as i64 - gas.storage_rebate as i64
+                    (gas.computation_cost + gas.storage_cost) as i32 - gas.storage_rebate as i32
                 }
                 TransactionEffects::V2(effects_v2) => {
                     let gas = effects_v2.gas_cost_summary();
-                    (gas.computation_cost + gas.storage_cost) as i64 - gas.storage_rebate as i64
+                    (gas.computation_cost + gas.storage_cost) as i32 - gas.storage_rebate as i32
                 }
             };
 
@@ -214,16 +208,16 @@ impl Processor for CheckpointHandler {
                 }
             }
 
-            // Get transaction digest
-            let tx_digest = tx.transaction.digest().to_string();
+            // Get transaction digest as vec
+            let tx_digest_vec = tx.transaction.digest().inner().to_vec();
 
             // Build stored transaction
             let stored_tx = StoredTransaction {
-                transaction_digest: tx_digest.clone(),
-                kind: kind_str,
+                transaction_digest: tx_digest_vec.clone(),
+                kind,
                 checkpoint_sequence: seq_number,
                 status,
-                error,
+                error: error_str.as_ref().map(|s| s.as_bytes().to_vec()),
                 inputs_imm_or_owned,
                 inputs_pure,
                 inputs_receiving,
@@ -248,114 +242,122 @@ impl Processor for CheckpointHandler {
                 TransactionEffects::V1(effects_v1) => {
                     for change in effects_v1.object_changes() {
                         let change_type = if change.id_operation == IDOperation::Created {
-                            "created".to_string()
+                            ChangeType::Created
                         } else if change.id_operation == IDOperation::Deleted && change.input_version.is_none() && change.output_version.is_none() {
-                            "unwrapped then deleted".to_string()
+                            ChangeType::UnwrappedThenDeleted
                         } else if change.id_operation == IDOperation::Deleted {
-                            "deleted".to_string()
+                            ChangeType::Deleted
                         } else if change.input_version.is_some() && change.output_version.is_some() {
-                            "mutated".to_string()
+                            ChangeType::Mutated
                         } else if change.input_version.is_none() && change.output_version.is_some() {
-                            "unwrapped".to_string()
+                            ChangeType::Unwrapped
                         } else if change.input_version.is_some() && change.output_version.is_none() {
-                            "wrapped".to_string()
+                            ChangeType::Wrapped
                         } else {
-                            "unknown".to_string()
+                            ChangeType::Unknown
                         };
 
                         let stored = ObjectChange {
-                            address: change.id.to_string(),
-                            transaction_digest: tx_digest.clone(),
+                            address: change.id.into_bytes().to_vec(),
+                            transaction_digest: tx_digest_vec.clone(),
                             change_type,
-                            input_version: change.input_version.map(|seq| seq.value() as i64).unwrap_or_default(),
-                            input_digest: change.input_digest.map(|d| d.to_string()).unwrap_or_default(),
-                            output_version: change.output_version.map(|seq| seq.value() as i64).unwrap_or_default(),
-                            output_digest: change.output_digest.map(|d| d.to_string()).unwrap_or_default(),
-                        };
+                            input_version: change.input_version.map(|seq| seq.value() as i32).unwrap_or_default(),
+                            input_digest: change.input_digest.map(|d| d.inner().to_vec()).unwrap_or_default(),
+                            output_version: change.output_version.map(|seq| seq.value() as i32).unwrap_or_default(),
+                            output_digest: change.output_digest.map(|d| d.inner().to_vec()).unwrap_or_default(),
+                        };                   
                         object_changes_vec.push(stored);
                     }
                 }
                 TransactionEffects::V2(effects_v2) => {
                     for change in effects_v2.object_changes() {
                         let change_type = if change.id_operation == IDOperation::Created {
-                            "created".to_string()
+                            ChangeType::Created
                         } else if change.id_operation == IDOperation::Deleted && change.input_version.is_none() && change.output_version.is_none() {
-                            "unwrapped then deleted".to_string()
+                            ChangeType::UnwrappedThenDeleted
                         } else if change.id_operation == IDOperation::Deleted {
-                            "deleted".to_string()
+                            ChangeType::Deleted
                         } else if change.input_version.is_some() && change.output_version.is_some() {
-                            "mutated".to_string()
+                            ChangeType::Mutated
                         } else if change.input_version.is_none() && change.output_version.is_some() {
-                            "unwrapped".to_string()
+                            ChangeType::Unwrapped
                         } else if change.input_version.is_some() && change.output_version.is_none() {
-                            "wrapped".to_string()
+                            ChangeType::Wrapped
                         } else {
-                            "unknown".to_string()
+                            ChangeType::Unknown
                         };
 
                         let stored = ObjectChange {
-                            address: change.id.to_string(),
-                            transaction_digest: tx_digest.clone(),
+                            address: change.id.into_bytes().to_vec(),
+                            transaction_digest: tx_digest_vec.clone(),
                             change_type,
-                            input_version: change.input_version.map(|seq| seq.value() as i64).unwrap_or_default(),
-                            input_digest: change.input_digest.map(|d| d.to_string()).unwrap_or_default(),
-                            output_version: change.output_version.map(|seq| seq.value() as i64).unwrap_or_default(),
-                            output_digest: change.output_digest.map(|d| d.to_string()).unwrap_or_default(),
+                            input_version: change.input_version.map(|seq| seq.value() as i32).unwrap_or_default(),
+                            input_digest: change.input_digest.map(|d| d.inner().to_vec()).unwrap_or_default(),
+                            output_version: change.output_version.map(|seq| seq.value() as i32).unwrap_or_default(),
+                            output_digest: change.output_digest.map(|d| d.inner().to_vec()).unwrap_or_default(),
                         };
+                        
                         object_changes_vec.push(stored);
                     }
                 }
             }
         }
 
-        Ok(vec![(vec![stored_checkpoint], transactions_vec, object_changes_vec)])
+        Ok(vec![IndexerBatch {
+            checkpoints: vec![stored_checkpoint],
+            transactions: transactions_vec,
+            object_changes: object_changes_vec,
+        }])
     }
 }
 
 #[async_trait::async_trait]
-impl sui_indexer_alt_framework::pipeline::sequential::Handler for CheckpointHandler {
+impl ConcurrentHandler for CheckpointHandler {
     type Store = Db;
-    type Batch = Vec<(Vec<StoredCheckpoint>, Vec<StoredTransaction>, Vec<ObjectChange>)>;
-
-    fn batch(batch: &mut Self::Batch, values: Vec<Self::Value>) {
-        batch.extend(values);
-    }
 
     async fn commit<'a>(
-        batch: &Self::Batch,
-        conn: &mut Connection<'a>,
+        values: &[Self::Value],
+        conn: &mut <Self::Store as Store>::Connection<'a>,
     ) -> Result<usize> {
         let mut total_inserted = 0;
 
-        for (checkpoint_batch, tx_batch, obj_batch) in batch.iter() {
+        for batch in values.iter() {
+            let checkpoint_batch = &batch.checkpoints;
+            let tx_batch = &batch.transactions;
+            let obj_batch = &batch.object_changes;
+
             if !checkpoint_batch.is_empty() {
-                let inserted = diesel::insert_into(checkpoints)
-                    .values(checkpoint_batch)
-                    .on_conflict(sequence_number)
-                    .do_nothing()
-                    .execute(conn)
-                    .await?;
-                total_inserted += inserted;
+                for chunk in checkpoint_batch.chunks(200) {
+                    let inserted = diesel::insert_into(checkpoints)
+                        .values(chunk)
+                        .on_conflict(sequence_number)
+                        .do_nothing()
+                        .execute(conn)
+                        .await?;
+                    total_inserted += inserted;
+                }
             }
 
             if !tx_batch.is_empty() {
-                let inserted = diesel::insert_into(transactions)
-                    .values(tx_batch)
-                    .on_conflict(transaction_digest)
-                    .do_nothing()
-                    .execute(conn)
-                    .await?;
-                total_inserted += inserted;
+                for chunk in tx_batch.chunks(2000) {
+                    let inserted = diesel::insert_into(transactions)
+                        .values(chunk)
+                        .on_conflict(transaction_digest)
+                        .do_nothing()
+                        .execute(conn)
+                        .await?;
+                    total_inserted += inserted;
+                }
             }
 
             if !obj_batch.is_empty() {
-                // No conflict resolution needed - object_id is auto-generated (SERIAL)
-                // Each insert will get a unique ID automatically
-                let inserted = diesel::insert_into(object_changes)
-                    .values(obj_batch)
-                    .execute(conn)
-                    .await?;
-                total_inserted += inserted;
+                for chunk in obj_batch.chunks(3000) {
+                    let inserted = diesel::insert_into(object_changes)
+                        .values(chunk)
+                        .execute(conn)
+                        .await?;
+                    total_inserted += inserted;
+                }
             }
         }
 
