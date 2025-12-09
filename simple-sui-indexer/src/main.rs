@@ -85,9 +85,23 @@ async fn main() -> Result<()> {
         ConcurrentConfig::default(),
     ).await?;
 
-    // Start the indexer and wait for completion
-    let handle = cluster.run().await?;
-    handle.await?;
+    // Start the indexer (this CONSUMES `cluster`)
+    let mut handle = cluster.run().await?;
 
+    // Graceful shutdown handling
+    tokio::select! {
+        // Ctrl+C branch
+        _ = tokio::signal::ctrl_c() => {
+            println!("Graceful shutdown requested. Waiting for in-flight commits to finish...");
+            // SAFELY wait for the indexer task to finish draining
+            (&mut handle).await?;
+            println!("Shutdown complete. All data safely committed.");
+        }
+
+        // Natural completion branch
+        res = &mut handle => {
+            res?;
+        }
+    }
     Ok(())
 }

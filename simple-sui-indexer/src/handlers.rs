@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use diesel_async::RunQueryDsl;
+use diesel::ExpressionMethods;
 use sui_indexer_alt_framework::{pipeline::Processor, postgres::Db};
 use sui_indexer_alt_framework::pipeline::concurrent::Handler as ConcurrentHandler;
 use sui_indexer_alt_framework::postgres::store::Store;
@@ -20,6 +21,7 @@ use crate::models::{StoredCheckpoint, StoredTransaction, ObjectChange, TxKind, S
 use crate::schema::transactions::dsl::{transactions, transaction_digest};
 use crate::schema::checkpoints::dsl::{checkpoints, sequence_number};
 use crate::schema::object_changes::dsl::object_changes;
+use crate::schema::watermarks::dsl as wm;
 
 
 /// Handler for inserting checkpoints + transactions + object changes
@@ -358,6 +360,17 @@ impl ConcurrentHandler for CheckpointHandler {
                         .await?;
                     total_inserted += inserted;
                 }
+            }
+
+            // Advance watermark to last successfully committed checkpoint
+            if let Some(last) = checkpoint_batch.last() {
+                let seq = last.sequence_number as i64;
+
+                diesel::update(wm::watermarks)
+                    .filter(wm::pipeline.eq("checkpoint_handler"))
+                    .set(wm::checkpoint_hi_inclusive.eq(seq))
+                    .execute(conn)
+                    .await?;
             }
         }
 
