@@ -34,7 +34,7 @@ export DATABASE_URL=postgres://postgres:56904628@172.26.112.1/sui_indexer
 diesel setup --database-url "$DATABASE_URL"
 diesel database reset --database-url "$DATABASE_URL"
 diesel migration run --database-url "$DATABASE_URL"
-INDEXER_WORKERS=3 cargo run --release -- --remote-store-url https://checkpopoints.mainnet.sui.io
+INDEXER_WORKERS=3 cargo run --release -- --remote-store-url https://checkpoints.mainnet.sui.io
 
 
 

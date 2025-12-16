@@ -16,6 +16,7 @@ use sui_types::effects::{TransactionEffects, TransactionEffectsAPI, IDOperation}
 use sui_types::transaction::{TransactionKind, TransactionDataAPI, Command, CallArg, ObjectArg, SharedObjectMutability};
 use sui_types::execution_status::ExecutionStatus;
 use chrono::{DateTime, Utc};
+use tokio::time::{timeout, Duration};
 
 use crate::models::{StoredCheckpoint, StoredTransaction, ObjectChange, TxKind, Status, ChangeType, IndexerBatch};
 use crate::schema::transactions::dsl::{transactions, transaction_digest};
@@ -41,7 +42,43 @@ impl Processor for CheckpointHandler {
         checkpoint: &Arc<CheckpointData>,
     ) -> Result<Vec<Self::Value>> {
 
-        // Sample every ~691th checkpoint, assuming 345k checkpoints per day and 100 desired samples per day
+        let seq = checkpoint.checkpoint_summary.sequence_number;
+
+        // HARD TIMEOUT: 10 minutes per checkpoint
+        let result = timeout(
+            Duration::from_secs(600),
+            async {
+                self.process_inner(checkpoint).await
+            }
+        ).await;
+
+        match result {
+            Ok(Ok(batch)) => Ok(batch),
+
+            Ok(Err(e)) => {
+                // Real error during processing
+                Err(e)
+            }
+
+            Err(_) => {
+                // TIMEOUT
+                eprintln!(
+                    "TIMEOUT processing checkpoint {} — skipping",
+                    seq
+                );
+                Ok(vec![]) // Skip this checkpoint safely
+            }
+        }
+    }
+}
+
+impl CheckpointHandler {
+    async fn process_inner(
+        &self,
+        checkpoint: &Arc<CheckpointData>,
+    ) -> Result<Vec<IndexerBatch>> {
+
+        // Sample every ~3455th checkpoint, assuming 345k checkpoints per day and 100 desired samples per day
         if checkpoint.checkpoint_summary.sequence_number % 3455 != 0 {
             return Ok(vec![]);
         }
@@ -322,14 +359,14 @@ impl ConcurrentHandler for CheckpointHandler {
         conn: &mut <Self::Store as Store>::Connection<'a>,
     ) -> Result<usize> {
         let mut total_inserted = 0;
-
+        
         for batch in values.iter() {
             let checkpoint_batch = &batch.checkpoints;
             let tx_batch = &batch.transactions;
             let obj_batch = &batch.object_changes;
 
             if !checkpoint_batch.is_empty() {
-                for chunk in checkpoint_batch.chunks(200) {
+                for chunk in checkpoint_batch.chunks(100) {
                     let inserted = diesel::insert_into(checkpoints)
                         .values(chunk)
                         .on_conflict(sequence_number)
@@ -341,7 +378,7 @@ impl ConcurrentHandler for CheckpointHandler {
             }
 
             if !tx_batch.is_empty() {
-                for chunk in tx_batch.chunks(2000) {
+                for chunk in tx_batch.chunks(300) {
                     let inserted = diesel::insert_into(transactions)
                         .values(chunk)
                         .on_conflict(transaction_digest)
@@ -353,7 +390,7 @@ impl ConcurrentHandler for CheckpointHandler {
             }
 
             if !obj_batch.is_empty() {
-                for chunk in obj_batch.chunks(3000) {
+                for chunk in obj_batch.chunks(500) {
                     let inserted = diesel::insert_into(object_changes)
                         .values(chunk)
                         .execute(conn)
