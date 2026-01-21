@@ -23,6 +23,7 @@ cargo run --release -- --remote-store-url https://checkpoints.mainnet.sui.io
 cargo run -- --remote-store-url https://checkpoints.mainnet.sui.io --from-checkpoint 400000 --to-checkpoint 420000
 
 psql -U postgres sui_indexer
+sudo -u postgres psql
 
 \dt
 TRUNCATE TABLE watermarks;
