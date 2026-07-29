@@ -78,6 +78,8 @@ impl CheckpointHandler {
         checkpoint: &Arc<CheckpointData>,
     ) -> Result<Vec<IndexerBatch>> {
 
+        //println!("Processing checkpoint: {}", checkpoint.checkpoint_summary.sequence_number);
+
         // Sample every ~3455th checkpoint, assuming 345k checkpoints per day and 100 desired samples per day
         if checkpoint.checkpoint_summary.sequence_number % 3455 != 0 {
             return Ok(vec![]);
@@ -271,8 +273,8 @@ impl CheckpointHandler {
                 command_make_move_vec,
                 command_upgrade,
                 sui_transferred,
-                gas_used,
-                gas_price,
+                gas_used: gas_used.into(),
+                gas_price: gas_price.into(),
             };
             transactions_vec.push(stored_tx);
 

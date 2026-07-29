@@ -12,6 +12,13 @@ diesel::table! {
 }
 
 diesel::table! {
+    gas_backfill_targets (transaction_digest) {
+        transaction_digest -> Bytea,
+        checkpoint_sequence -> Int4,
+    }
+}
+
+diesel::table! {
     object_changes (object_id) {
         object_id -> Int8,
         address -> Bytea,
@@ -45,12 +52,31 @@ diesel::table! {
         command_make_move_vec -> Int2,
         command_upgrade -> Int2,
         sui_transferred -> Int2,
-        gas_used -> Int4,
-        gas_price -> Int4,
+        gas_used -> Int8,
+        gas_price -> Int8,
+    }
+}
+
+diesel::table! {
+    watermarks (pipeline) {
+        pipeline -> Text,
+        epoch_hi_inclusive -> Int8,
+        checkpoint_hi_inclusive -> Int8,
+        tx_hi -> Int8,
+        timestamp_ms_hi_inclusive -> Int8,
+        reader_lo -> Int8,
+        pruner_timestamp -> Timestamp,
+        pruner_hi -> Int8,
     }
 }
 
 diesel::joinable!(object_changes -> transactions (transaction_digest));
 diesel::joinable!(transactions -> checkpoints (checkpoint_sequence));
 
-diesel::allow_tables_to_appear_in_same_query!(checkpoints, object_changes, transactions,);
+diesel::allow_tables_to_appear_in_same_query!(
+    checkpoints,
+    gas_backfill_targets,
+    object_changes,
+    transactions,
+    watermarks,
+);

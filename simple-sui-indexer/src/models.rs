@@ -177,8 +177,8 @@ pub struct StoredTransaction {
     pub command_make_move_vec: i16,
     pub command_upgrade: i16,
     pub sui_transferred: i16,
-    pub gas_used: i32,
-    pub gas_price: i32,
+    pub gas_used: i64,
+    pub gas_price: i64,
 }
 
 #[derive(Insertable, Queryable, Debug, Clone, FieldCount)]
