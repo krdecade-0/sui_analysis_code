@@ -1,11 +1,36 @@
 Sui commit: 649e5e2ad4b7a48dd49fd7c0990a98f13ef5359e
 
 Cargo dependencies:
-sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", rev = "649e5e2ad4b7a48dd49fd7c0990a98f13ef5359e" }
+# Core framework dependencies
+sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", branch = "mainnet" }
+sui-types = { git = "https://github.com/MystenLabs/sui.git", branch = "mainnet", package = "sui-types" }
 
-sui-types = { git = "https://github.com/MystenLabs/sui.git",
-              rev = "649e5e2ad4b7a48dd49fd7c0990a98f13ef5359e",
-              package = "sui-types" }
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Error handling
+anyhow = "1.0"
+
+# Diesel PostgreSQL
+diesel = { version = "2.0", features = ["postgres", "r2d2"] }
+diesel-async = { version = "0.5", features = ["bb8", "postgres", "async-connection-wrapper"] }
+diesel_migrations = "2.0"
+
+# Async traits
+async-trait = "0.1"
+
+# URL parsing
+url = "2.0"
+
+# Use .env file
+dotenvy = "0.15"
+
+# Command line parsing
+clap = { version = "4.0", features = ["derive"] }
+base64 = "0.22.1"
+
+bcs = "0.1.6"
+chrono = { version = "0.4", features = ["serde"] }
 
 CoinMarketCap dataset snapshot date: February 2026
 
